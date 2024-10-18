@@ -13,6 +13,7 @@ fn read(s: String) -> SExpression {
     Reader::read(s)
 }
 
+// This class handles converting string input to an SExpression.
 struct Reader {
     tokens: Vec<String>,
     index: usize,
@@ -25,6 +26,10 @@ impl Reader {
     }
 
     fn of_string(s: String) -> Self {
+        // Quick and dirty implementation. We insert spaces
+        // around opening and close parentheses so we can then
+        // split on whitespace and get open/close parens as distinct
+        // tokens.
         let tokens: Vec<String> = s
             .replace("(", " ( ")
             .replace(")", " ) ")
@@ -107,7 +112,9 @@ fn parse(sexpr: SExpression) -> Value {
     }
 }
 
-// Environments hold mappings from symbols to values
+// Environments hold mappings from symbols to values. They contain a pointer
+// to their parent environment so lookups can be forwarded to the enclosing
+// environment in case the current environment doesn't have a match.
 struct Env<'a> {
     bindings: HashMap<String, Value>,
     parent: Option<&'a Env<'a>>,
@@ -121,6 +128,8 @@ impl<'a> Env<'a> {
         }
     }
 
+    // Need to include some primitive procedures to actually make anything
+    // useful.
     fn new_with_primitives() -> Self {
         let mut env = Self::new();
         env.bind("-".to_string(), Value::PrimitiveProc(primitive_minus));
@@ -183,10 +192,14 @@ const SPECIAL_PROGN: &str = "progn";
 const SPECIAL_LAMBDA: &str = "lambda";
 const SPECIAL_SYMBOLS: [&str; 4] = [SPECIAL_DEFINE, SPECIAL_IF, SPECIAL_PROGN, SPECIAL_LAMBDA];
 
+// We need special handling wherever the default "apply" handling
+// of evaluating all the arguments doesn't work.
 fn apply_special(env: &mut Env, contents: Vec<Value>) -> Value {
     if let Value::Symbol(ref s) = contents[0] {
         match s.as_ref() {
             SPECIAL_DEFINE => {
+                // For define, we bind the second element of the form to
+                // the evaluated value of the third element.
                 if let Value::Symbol(ref varname) = contents[1] {
                     let value = eval(env, contents[2].clone());
                     env.bind(varname.clone(), value);
@@ -196,10 +209,17 @@ fn apply_special(env: &mut Env, contents: Vec<Value>) -> Value {
                 }
             }
             SPECIAL_IF => match eval(env, contents[1].clone()) {
+                // If triggers evaluation of the second or third element depending
+                // on if the condition is true or false. Only the nil value is treated
+                // as false, anything else is treated as true.
                 Value::Nil => eval(env, contents[3].clone()),
                 _ => eval(env, contents[2].clone()),
             },
             SPECIAL_PROGN => {
+                // progn evaluates a sequence of expressions and returns the value
+                // of the last one. Each expression is evaluated in the same environment,
+                // so if any of them changes the environment, subsequent evaluations
+                // will see that change.
                 let mut last = Value::Nil;
                 for v in contents[1..].iter() {
                     last = eval(env, v.clone())
@@ -207,6 +227,7 @@ fn apply_special(env: &mut Env, contents: Vec<Value>) -> Value {
                 last
             }
             SPECIAL_LAMBDA => {
+                // lambda creates a procedure
                 let arglist: Vec<String> = match &contents[1] {
                     Value::List(contents) => contents
                         .iter()
@@ -236,21 +257,23 @@ fn is_special(expr: Value) -> bool {
     }
 }
 
-// Apply handles procedure application. The application rule is to
-// first evaluate the head of the list. If the head is a procedure,
-// then evaluate each of the values in the tail of the list, construct
-// a new environment by binding the values to the argument list of the
-// procedure and then evaluate the procedure's body in the new environment.
-// It is an error for the head to not evaluate to a procedure.
+// Apply implements the default procedure application rule.
 fn apply(env: &mut Env, values: Vec<Value>) -> Value {
+    // first evaluate the head
     match eval(env, values[0].clone()) {
         Value::Procedure(proc) => {
+            // If it is a procedure, then evalaute all the arguments
             let args = values[1..].iter().map(|v| eval(env, v.clone())).collect();
+            // Construct a child environment of the current environment and bind
+            // the arguments to the procedure's free variables (ie, the argument list).
             let mut apply_env = env.new_child_env();
             apply_env.bind_many(proc.arglist, args);
+            // And evaluate the body of the procedure in the resulting environment
             eval(&mut apply_env, *proc.body)
         }
         Value::PrimitiveProc(native_func) => {
+            // If it is a primitive procedure, valuate the arguments and pass them
+            // directly to the rust function implementing the procedure.
             let args = values[1..].iter().map(|v| eval(env, v.clone())).collect();
             return native_func(args);
         }
