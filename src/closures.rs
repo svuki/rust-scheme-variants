@@ -97,6 +97,7 @@ enum Value {
 struct Proc {
     arglist: Vec<String>,
     body: Box<Value>,
+    env: Rc<RefCell<Env>>,
 }
 
 // Parse takes in the SExpression and converts it to a Value.
@@ -117,6 +118,7 @@ fn parse(sexpr: SExpression) -> Value {
 // Environments hold mappings from symbols to values. They contain a pointer
 // to their parent environment so lookups can be forwarded to the enclosing
 // environment in case the current environment doesn't have a match.
+#[derive(Clone, Debug, PartialEq)]
 struct Env {
     bindings: HashMap<String, Value>,
     parent: Option<Rc<RefCell<Env>>>,
@@ -143,6 +145,7 @@ impl Env {
         env.bind("-".to_string(), Value::PrimitiveProc(primitive_minus));
         env.bind("*".to_string(), Value::PrimitiveProc(primitive_multiply));
         env.bind("=".to_string(), Value::PrimitiveProc(primitive_eq));
+        env.bind("+".to_string(), Value::PrimitiveProc(primitive_plus));
         env
     }
 
@@ -177,10 +180,22 @@ impl Env {
             }
         }
     }
+
+    fn show(&self, prefix: &str) {
+        for key in self.bindings.keys() {
+            println!("{}{}", prefix, key);
+        }
+        match &self.parent {
+            Some(parent) => parent.borrow().show(&(prefix.to_string() + "  ")),
+            _ => return,
+        }
+    }
 }
 
 // Eval implements the evaluation rules for our interpreter.
 fn eval(env: Rc<RefCell<Env>>, expr: Value) -> Value {
+    println!("Evaluate: {:#?}", expr);
+    env.borrow().show("");
     match expr {
         Value::Number(_) => expr, // numbers evaluate to themselves
         Value::Symbol(s) => env.borrow().lookup(s), // find the bound value for the symbol
@@ -248,8 +263,9 @@ fn apply_special(env: Rc<RefCell<Env>>, contents: Vec<Value>) -> Value {
                 // so if any of them changes the environment, subsequent evaluations
                 // will see that change.
                 let mut last = Value::Nil;
+                let progn_env = new_child_env(env);
                 for v in c_iter {
-                    last = eval(env.clone(), v.clone())
+                    last = eval(progn_env.clone(), v.clone())
                 }
                 last
             }
@@ -266,6 +282,7 @@ fn apply_special(env: Rc<RefCell<Env>>, contents: Vec<Value>) -> Value {
                 Value::Procedure(Proc {
                     arglist,
                     body: Box::new(body),
+                    env: env.clone(),
                 })
             }
             SPECIAL_SET => {
@@ -306,7 +323,7 @@ fn apply(env: Rc<RefCell<Env>>, values: Vec<Value>) -> Value {
                 .collect();
             // Construct a child environment of the current environment and bind
             // the arguments to the procedure's free variables (ie, the argument list).
-            let apply_env = new_child_env(env);
+            let apply_env = new_child_env(proc.env.clone());
             apply_env.borrow_mut().bind_many(proc.arglist, args);
             // And evaluate the body of the procedure in the resulting environment
             eval(apply_env, *proc.body)
@@ -362,6 +379,14 @@ fn primitive_multiply(values: Vec<Value>) -> Value {
     Value::Number(count)
 }
 
+fn primitive_plus(values: Vec<Value>) -> Value {
+    let mut count = 0.;
+    for v in &values {
+        count += expect_number(v)
+    }
+    Value::Number(count)
+}
+
 fn primitive_eq(values: Vec<Value>) -> Value {
     let fst = &values[0];
     for v in &values[1..] {
@@ -377,7 +402,7 @@ mod test {
     use super::*;
 
     #[test]
-    fn test_case() {
+    fn test_set() {
         let program = "
 (progn
   (define x 3)
@@ -389,5 +414,29 @@ mod test {
         let root_env = Rc::new(RefCell::new(Env::new_with_primitives()));
         let result = eval(root_env, expr);
         assert_eq!(result, Value::Number(100.));
+    }
+
+    #[test]
+    fn test_closure() {
+        let program = "
+(progn
+  (define make-counter
+     (lambda ()
+        (progn
+          (define counter 0)
+          (lambda (value)
+            (if (= 0 value)
+              counter
+              (set! counter (+ counter value)))))))
+  (define counter (make-counter))
+  (counter 100)
+  (counter 101)
+  (counter 0))
+";
+        let expr = parse(read(program.to_string()));
+        println!("Expr: {:#?}", expr);
+        let root_env = Rc::new(RefCell::new(Env::new_with_primitives()));
+        let result = eval(root_env, expr);
+        assert_eq!(result, Value::Number(201.));
     }
 }
