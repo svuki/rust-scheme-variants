@@ -21,6 +21,11 @@ struct Reader {
     index: usize,
 }
 
+fn x(a: RefCell<Value>) {
+    let x = &*a.borrow();
+    let y = &x;
+}
+
 impl Reader {
     pub fn read(s: String) -> SExpression {
         let mut reader = Self::of_string(s);
